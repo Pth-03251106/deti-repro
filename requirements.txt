@@ -1,0 +1,16 @@
+# DETI -- "Polynomial Time Cryptanalytic Extraction of Neural Network Models"
+# (CRYPTO 2023) reproduction environment.
+#
+# The attack assumes float64 arithmetic throughout. It was written against
+# Keras 2; Keras 3 (shipped with TensorFlow >= 2.16) removed two APIs the code
+# relies on, so TensorFlow is pinned to 2.15.x. If you must run on a newer
+# TensorFlow, see compat/sitecustomize.py.
+#
+# Python 3.11 is what this was verified on.
+
+tensorflow==2.15.0
+keras==2.15.0
+numpy==1.26.4
+pandas==2.2.3
+tabulate==0.10.0
+h5py==3.16.0
