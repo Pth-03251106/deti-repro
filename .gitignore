@@ -58,3 +58,10 @@ Thumbs.db
 
 # Precomputed models
 precomputed_model*
+
+# 本地文件，不入库
+# results.zip 是 results/ 的 Finder 压缩副本（含 __MACOSX 垃圾），内容与 results/ 重复
+results.zip
+# 课程汇报素材，Part B（PPT 页面结构）不属于仓库文档；技术内容已并入 README.md
+DETI复现分析.md
+DETI复现分析.pdf

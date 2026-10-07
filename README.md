@@ -1,128 +1,523 @@
-_This repository contains the code for the manuscript "Polynomial Time Cryptanalytic Extraction of Neural Network Models"._
+# DETI 复现分析
 
-> **复现者注：** 本项目是上述论文代码的复现，环境准备与本仓库的运行方式请看
-> [REPRODUCE.md](REPRODUCE.md)（中文）。改动包括：锁定的依赖版本 `requirements.txt`、
-> 可移植的运行脚本 `run_deti.sh`、Keras 3 兼容层 `compat/`，以及复现产出的 `results/`。
+对论文 **"Polynomial Time Cryptanalytic Extraction of Neural Network Models"** 所发布代码的完整复现，
+按**实验**逐项记录过程、结果与偏差分析。
 
-# Sign Recovery Attack on ReLU-based Deep Neural Networks
+| 项 | 内容 |
+|---|---|
+| 论文 | *Polynomial Time Cryptanalytic Extraction of Neural Network Models* |
+| 作者 | Isaac A. Canales-Martínez、Jorge Chávez Saab、Anna Hambitzer、Francisco Rodríguez-Henríquez、Nitin Satpute（Technology Innovation Institute）、**Adi Shamir**（Weizmann Institute of Science） |
+| 发表 | **EUROCRYPT 2024**, LNCS 14653, pp. 3–33 |
+| 预印本 | [IACR ePrint 2023/1526](https://eprint.iacr.org/2023/1526) · [arXiv:2310.08708](https://arxiv.org/abs/2310.08708) · [DOI](https://doi.org/10.1007/978-3-031-58734-4_1) |
+| 源码 | 本仓库，原代码以 MIT 协议发布（见 [LICENSE](LICENSE)，版权归原作者所有） |
+| 复现结论 | **8 个实验 + 1 项模型评估全部完成，983 个神经元的符号 100% 恢复正确** |
 
-Implementation of an attack to recover the signs of a ReLU-based deep
-neural network (DNN) in polynomial time. 
+> **注意**：原仓库 `README.md` 中写的是 "CRYPTO 2023"，但该论文实际发表于 **EUROCRYPT 2024**，
+> 2023 只是 ePrint 预印本的时间。原始英文说明已保留为 [README_upstream.md](README_upstream.md)。
 
-# Caveats 
-### Infinite Numerical Precision
-Note that in our manuscript we assume infinite numerical precision. In practice our attack works using 64-bit arithmetic. 
-If you are trying to attack a TensorFlow model with lower precision, our attack might run into problems. To check the precision of your model, you can use `model.weights[0].dtype` which should return `'float64'`.
+**想直接上手跑** → 看 [REPRODUCE.md](REPRODUCE.md)（环境配置、命令、排查）。
+本文档讲的是**复现做了什么、结果如何、和论文比怎么样**。
 
-### Implementation Status
-This is our very first implementation of the ideas presented in our manuscript. The code is parallelizable at one point in each of our sign recovery techniques SOE, Neuron Wiggle and Last Hidden Layer. 
-These parallelizations are not implemented as of now. If you look into the source code, the places where we assume that parallelization is possible are clearly hightlighted, and it should be easy to see that the code can be parallelized at this point (for example in `for` loops). 
+---
 
-# Reproduce Attacks from our Manuscript
+## 目录
 
-To reproduce the results of the attacks reported in our manuscript, please execute the following commands: 
+- [一、论文背景](#一论文背景)
+- [二、复现环境](#二复现环境)
+- [三、复现实验](#三复现实验)
+  - [实验 1 · 784-128-1 · SOE](#实验-1--784-128-1--soe)
+  - [实验 2 · 784-128-1 · Last Hidden Layer](#实验-2--784-128-1--last-hidden-layer)
+  - [实验 3 · 100-200×3-10 · Neuron Wiggle（层 1）](#实验-3--100-200×3-10--neuron-wiggle层-1)
+  - [实验 4 · 100-200×3-10 · Neuron Wiggle（层 2）](#实验-4--100-200×3-10--neuron-wiggle层-2)
+  - [实验 5 · 100-200×3-10 · Last Hidden Layer（层 3）](#实验-5--100-200×3-10--last-hidden-layer层-3)
+  - [实验 6 · CIFAR10 · SOE（层 1）](#实验-6--cifar10-3072-256×8-10--soe层-1)
+  - [实验 7 · CIFAR10 · Neuron Wiggle（层 2）](#实验-7--cifar10-3072-256×8-10--neuron-wiggle层-2)
+  - [实验 8 · CIFAR10 · Last Hidden Layer（层 8）](#实验-8--cifar10-3072-256×8-10--last-hidden-layer层-8)
+  - [实验 9 · CIFAR10 模型精度评估](#实验-9--cifar10-模型精度评估)
+- [四、结果汇总](#四结果汇总)
+- [五、分析与讨论](#五分析与讨论)
+- [六、结论](#六结论)
+- [附录：目录与结果文件说明](#附录目录与结果文件说明)
 
-## Attack on 784-128-1
-Attack with SOE should return an (unparallelized) execution time of **(6.77+-0.04)s**.  
-```
-python -m deti.soe --model deti/models/unitary_784_128_1.keras --layerID 1 --runID 'soe'
-```
+---
 
-Attack with Last Hidden Layer should return an (unparallelized) execution time of **(18.61+-0.05)s**.  
-```
-python -m deti.lastLayer --model deti/models/unitary_784_128_1.keras --layerID 1 --runID 'lastLayer'
-```
+## 一、论文背景
 
-## Attack on 100-200(x3)-10 
-Attack with Neuron Wiggle should return a (parallelizable) runtime of about **(16.3+-0.4)s**, respectively **(18.8+-0.5)s** per neuron.
-_(since our implementation is not parallelized we use only five randomly chosen neurons in this demo)_
-```
-python -m deti.neuronWiggle --model deti/models/unitary_100_200x3_10.keras --layerID 1 --runID 'neuronWiggle' --tgtNeurons 4 26 30 77 168 
-python -m deti.neuronWiggle --model deti/models/unitary_100_200x3_10.keras --layerID 2 --runID 'neuronWiggle' --tgtNeurons 4 26 30 77 168 
-```
+### 1.1 模型提取攻击
 
-Attack with Last Hidden Layer should return an (unparallelized) execution time of **(35.8+-0.2)s**.
-```
-python -m deti.lastLayer --model deti/models/unitary_100_200x3_10.keras --layerID 3 --runID 'lastLayer'
-```
+训练一个好的深度神经网络代价高昂（数据、算力、调参），模型本身就是**知识产权**。当模型以 API
+形式对外提供服务时，攻击者只能"喂输入、看输出"。**攻击设定**：
 
-## Attack on 3072-256(x8)-10
+- 攻击者可以把**任意输入** `x` 喂给模型，读到**高精度实数输出** `f(x)`；
+- 不能看权重、不能看中间层；
+- 目标：恢复模型的全部实数参数，得到一个**功能等价**的模型。
 
-Attack with SOE on layerID 1 (and 2) should return an (unparallelized) execution time of **(16+-1)s**.
-```
-python -m deti.soe --model deti/models/cifar10_rgb_8x256.keras --layerID 1 --runID 'soe'
-```
+| 工作 | 查询次数 | 时间 |
+|---|---|---|
+| Carlini, Jagielski, Mironov（CRYPTO 2020） | 多项式 | **指数**（关于神经元数量） |
+| **本文（EUROCRYPT 2024）** | 多项式 | **多项式** |
 
-Attack with Neuron Wiggle should return a (parallelizable) runtime of about **(182+-2)s** per neuron
-(since our implementation is not parallelized we use only five randomly chosen neurons in this demo)
-```
-python -m deti.neuronWiggle --model deti/models/cifar10_rgb_8x256.keras --layerID 2 --runID 'neuronWiggle' --dataset 'CIFAR10' --tgtNeurons 4 26 30 77 168 
-```
+因为 ReLU 是**分段线性**函数，网络只是把输入空间划分成许多多面体区域、每块上是个仿射函数——
+所以有希望通过"找出所有分界面"来还原参数。**实际威胁**：论文对一个真实的 CIFAR10 分类器
+（3072 输入、8 个隐藏层各 256 神经元、约 120 万参数）完成提取；用上一版方法仅恢复其中一层的符号
+就要穷举 `2^256` 种可能，本文方法在一台 **256 核机器上约 30 分钟**完成。
 
-Attack with Last Hidden Layer should return an (unparallelized) execution time of **(189+-40)s**.
-```
-python -m deti.lastLayer --model deti/models/cifar10_rgb_8x256.keras --layerID 8 --runID 'lastLayer'
-```
+### 1.2 核心问题：符号恢复
 
-## Evaluate Accuracy on CIFAR10 
+论文采取**逐层剥离（layer by layer）**的策略，每层分两步：
 
-To evaluate the accuracy of our CIFAR10 network, please execute the following Python commands. You should obtain an accuracy of 0.5249 on the CIFAR10 test dataset.
-```python
-import tensorflow as tf
-from keras.datasets import cifar10
+1. **恢复超平面**（论文称 *signature*）：拿到该层每个神经元的权重向量 `w` 和偏置 `b`，
+   但**每个神经元的整体符号未知**（即只知道 `±(w, b)`）；
+2. **恢复符号**（*sign recovery*）：确定每个神经元到底是 `(w, b)` 还是 `(-w, -b)`。
+   ← **本文的核心贡献，也是本次复现的对象**
 
-model = tf.keras.models.load_model('deti/models/cifar10_rgb_8x256.keras')
-
-def normalize_resize(image, label):
-    image = tf.cast(image, tf.float32)
-    image = tf.divide(image, 255)
-    image = tf.image.resize(image, (32,32))
-    return image, label
-
-(trainX, trainy), (testX, testy) = cifar10.load_data()
-testX, testy = normalize_resize(testX, testy)
-testX = tf.keras.layers.Flatten()(testX)
-model.evaluate(testX, testy)
-# Expected result: 313/313 [==============================] - 2s 1ms/step - loss: 1.3801 - accuracy: 0.5249
-```
-
-# Create a new Unitary Balanced DNN
-```python 
-import deti
-inputShape = (200,)
-neuronsHiddenLayers = [200] * 8
-outputs = 10
-
-model = deti.unitarydnn.newRandomBalancedModel(inputShape, neuronsHiddenLayers, outputs, 1.0)
-model.save('deti/models/randomdnn_8x200_10.keras')
-```
-
-# Dependencies
-
-The code execution relies on standard Python modules such as NumPy, Pandas, and TensorFlow. If you start from an empty Python Anaconda environment, the following installation should be sufficient:
+**为什么符号是真正的难点？** ReLU 网络存在**对称性**：把某一层第 *j* 个神经元的权重与偏置整体
+取反，只要在下游做相应补偿，网络的输入输出行为可以**完全不变**。所以光看"喂什么进去、吐出什么"，
+这个符号是**不可直接读出的**，必须主动设计特殊的查询把它逼出来。立足点是下面这个恒等式：
 
 ```
-conda create -n tf-gpu tensorflow-gpu
-conda activate tf-gpu
-conda install -c nvidia cuda-nvcc
-conda install pandas
-conda install tabulate
-conda install numpy
+ReLU(-y) - ReLU(y) = -y        （对任意 y 恒成立）
 ```
 
-# General Usage
+把某个神经元取反，等价于让它的输出相差一个"预激活值 `y = w·x + b`"，而这是输入的**线性函数**。
+在深层网络里这个差异会被后续 ReLU 和非线性层层放大，从而在输出端变成**可观测的非线性变化**。
 
-### SOE 
+> 攻击**不假设**攻击者已知符号：代码里 `whitebox.getSignatures()` 会把目标层的真实权重乘上真实
+> 符号，用来模拟"只知道 signature、不知道符号"的状态，再看攻击能否还原回去。
+
+### 1.3 三种符号恢复技术
+
+论文提出三种互补的技术，代码分别对应三个脚本：
+
+| 方法 | 脚本 | 粒度 | 适用位置 | 优势 | 代价 |
+|---|---|---|---|---|---|
+| **SOE**（System of Equations） | [soe.py](soe.py) | **整层一次** | 任意层（需网络足够收缩） | 最快、最稳 | 病态网络会失败 |
+| **Neuron Wiggle** | [neuronWiggle.py](neuronWiggle.py) | **逐个神经元** | 任意层 | 通用、鲁棒 | 慢，且**可并行但未实现** |
+| **Last Hidden Layer** | [lastLayer.py](lastLayer.py) | **整层一次** | 仅最后一隐层 | 一次拿下整层 | 依赖二阶差分精度，对 `eps` 敏感 |
+
+论文的完整性来自三者的互补：SOE 快但会失败，Neuron Wiggle 兜底但慢，Last Hidden Layer 专治最后一层。
+各方法的原理要点在对应实验里说明。
+
+---
+
+## 二、复现环境
+
+**硬件**：MacBook Pro 16,1（2019 款），Intel Core i7-9750H（6 核 12 线程），16 GB 内存。
+
+**GPU 不可用，全程 CPU**：本机有独立显卡 AMD Radeon Pro 5300M，但 TensorFlow 用不上——macOS 上
+TF 的 GPU 支持只有 `tensorflow-metal`，仅限 Apple Silicon（M 系列），本机是 Intel 机型；AMD 卡也不
+支持 CUDA，`tf.config.list_physical_devices('GPU')` 返回空。
+
+> 不过本攻击的瓶颈是"每次只查 1 个样本"的 `model.predict` 调用，属于**延迟受限**而非吞吐受限，
+> 即便有 GPU 收益也有限——真正的加速空间在**多核并行**（见 [5.2](#52-并行化的价值量化)）。
+
+**环境配置**：conda 环境 `deti`，Python 3.11.13 + **TensorFlow 2.15.0 / Keras 2.15.0** +
+numpy 1.26.4 + pandas 2.2.3 + scipy 1.15.2 + tabulate 0.10.0 + h5py 3.16.0（见 [requirements.txt](requirements.txt)）。
+
+### 复现踩到的三个坑
+
+| # | 问题 | 现象 | 解决 |
+|---|---|---|---|
+| 1 | **必须用 Keras 2** | 论文代码用了 `from tensorflow.keras import ...`、`model.output_shape`、`layer.input.shape` 等 API，这些在 Keras 3（TF ≥ 2.16）中**已被删除**，直接连环报错 | 单独建 TF 2.15 环境；另提供 [compat/sitecustomize.py](compat/sitecustomize.py) 给只能跑新 TF 的环境 |
+| 2 | **模型文件扩展名是假的** | `models/*.keras` 的文件头其实是 `\x89HDF`，是**旧版 HDF5 格式**，只是被改了扩展名。Keras 3 按扩展名判断会当 zip 打开，报 "not an accessible `.keras` zip file" | 生成同内容 `.h5` 副本，用 `.h5` 路径加载 |
+| 3 | **包名含连字符** | 代码用包内绝对导入，必须以 `deti` 为包名运行；但仓库目录叫 `deti-main`，连字符不是合法 Python 标识符 | [run_deti.sh](run_deti.sh) 用临时软链接把仓库暴露为 `deti` |
+
+> 另有一个小坑：`pip` 安装依赖时若不指定 `--only-binary=:all:`，会去**源码编译 `cryptography`**
+> （需要 Rust 工具链），直接挂死十几分钟。
+
+**注意**：以上三个坑都是**环境/工程问题，论文源码本身一行未改**——这本身就是复现成功的一项证据。
+
+**CIFAR10 数据集**：实验 7 的 Neuron Wiggle 需要真实 CIFAR10 测试图作为攻击起始点。Keras 默认从
+`cs.toronto.edu` 下载，国内实测仅 ~90 KB/s（170 MB 需一个多小时）；改用百度镜像（~470 KB/s，约
+6 分钟），并校验 SHA256 与官方文件一致。
+
+---
+
+## 三、复现实验
+
+下面 9 项按论文README 的顺序编号。每项给出：**目标 → 命令 → 结果 → 与论文对比 → 观察**。
+原始数据在 `results/` 下对应目录，格式见[附录](#附录目录与结果文件说明)。
+
+### 实验 1 · 784-128-1 · SOE
+
+| 项 | 值 |
+|---|---|
+| 目标网络 | `unitary_784_128_1`（784 → 128 ReLU → 1 linear） |
+| 攻击层 | `layerID 1`（唯一的隐藏层） |
+| 规模 | 128 个神经元 |
+| 命令 | `./run_deti.sh soe --model models/unitary_784_128_1.h5 --layerID 1 --runID soe` |
+| 结果目录 | `results/model_unitary_784_128_1.h5/layerID_1/nExp_200/runID_soe/` |
+
+**原理**：ReLU 网络在**局部**（不跨越任何分界面的一个小邻域内）就是**仿射函数** `f(x) = M·x + b`。
+攻击者先找到一个这样的局部区域，查询得到该处的局部线性映射 `M`、`b`；然后在附近做大量微小扰动，
+每次扰动得到一个"关于未知符号的线性方程"；收集够 n 个方程后构成**超定线性方程组**，用伪逆一次解出。
+代码输出里的四步对应：`STEP 1` 找点 → `STEP 2` 求局部矩阵 M → `STEP 3` 收集方程组（标注
+**parallelizable**）→ `STEP 4` 解方程组。
+
+**结果**：**128/128 全部恢复正确**，总耗时 **9.14 s**（约 0.071 s/神经元）。
+
+| | 本机 | 论文 | 倍数 |
+|---|---|---|---|
+| 耗时 | 9.14 s | 6.77 ± 0.04 s | **1.35×** |
+
+**观察**：SOE 一次恢复整层，是本复现中最快的一项。误差在硬件差异可解释范围内（纯 CPU、单线程
+vs 论文的多核服务器）。
+
+---
+
+### 实验 2 · 784-128-1 · Last Hidden Layer
+
+| 项 | 值 |
+|---|---|
+| 目标网络 | `unitary_784_128_1` |
+| 攻击层 | `layerID 1`（即最后一隐层） |
+| 规模 | 128 个神经元 |
+| 命令 | `./run_deti.sh lastLayer --model models/unitary_784_128_1.h5 --layerID 1 --runID lastLayer` |
+| 结果目录 | `results/model_unitary_784_128_1.h5/layerID_1/nExp_200/runID_lastLayer/` |
+
+**原理**：针对**最后一个隐藏层**的特殊方法。最后一层的输出直接线性组合到网络输出，符号信息在这里
+最"薄"（变号只差一个线性项，而最后一层后面就是线性的，一阶信息几乎被抵消），因此转而利用**二阶
+差分**：
+
 ```
-python -m deti.soe --model deti/models/cifar10_rgb_8x256.keras --layerID 2 --runID 'soe'
+c = func(x + 2·dx) - 2·func(x + dx) + func(x)      # 二阶有限差分 ≈ 二阶导数
 ```
 
-### Neuron Wiggle
+见 [blackbox.py:294](blackbox.py#L294) `getLastLayerOutputMatrixBlackbox`。用二阶信息构造线性方程组
+解出全部符号。
+
+**结果**：**128/128 全部恢复正确**，总耗时 **26.07 s**（约 0.204 s/神经元，其中求系数 0.204 s、
+定符号仅 4.6 µs）。
+
+| | 本机 | 论文 | 倍数 |
+|---|---|---|---|
+| 耗时 | 26.07 s | 18.61 ± 0.05 s | **1.40×** |
+
+**观察**：二阶差分要求精细的步长 `--eps`（步长 = `10^-eps`），精度不够会直接报 `PRECISION ERROR`。
+本次全程使用默认 `--eps 8`，未触发任何精度错误。结果表中 `coeff` 一列几乎精确为 `±1` 或 `0`
+（如 `0.999998`、`1.57218e-06`），说明数值质量良好。
+
+---
+
+### 实验 3 · 100-200×3-10 · Neuron Wiggle（层 1）
+
+| 项 | 值 |
+|---|---|
+| 目标网络 | `unitary_100_200x3_10`（100 → 200×3 ReLU → 10 linear） |
+| 攻击层 | `layerID 1` |
+| 规模 | **抽样 5 个神经元**（4, 26, 30, 77, 168） |
+| 命令 | `./run_deti.sh neuronWiggle --model models/unitary_100_200x3_10.h5 --layerID 1 --runID neuronWiggle --tgtNeurons 4 26 30 77 168` |
+| 结果目录 | `results/model_unitary_100_200x3_10.h5/layerID_1/nExp_200/runID_neuronWiggle/` |
+
+**原理**（1）找到一个**临界点** `xi`，让目标神经元的预激活值恰好为 0（正好落在该神经元的 ReLU
+分界面上）；（2）沿一个精心构造的"能量最大化"方向 `w`，分别在 `xi-w`、`xi+w`、`xi` 三点查询网络；
+（3）比较两侧位移造成的输出变化量 `sL = ‖f(xi-w)-f(xi)‖`、`sR = ‖f(xi+w)-f(xi)‖`——哪边变化更剧烈
+就暗示神经元朝向哪边；（4）**重复 200 次**（每次重新找临界点），**多数投票**决定符号。
+
+> **结果表怎么读**：`metric4Minus` / `metric4Plus` 是 200 次实验的票数，`percentage` 是得票率
+> （置信度）。例如 `23 : 177`、`0.885`，即 200 次里 177 次投 "+"，真实符号为 +。
+
+**结果**：**5/5 全部恢复正确**，平均 **22.69 s/神经元**。
+
+| 神经元 | 真实符号 | 票数 (减:加) | 得票率 | 找临界点 | 定符号 |
+|---|---|---|---|---|---|
+| 4 | − | 123 : 77 | 0.615 | 0.119 s | 22.06 s |
+| 26 | − | 146 : 54 | 0.730 | 0.117 s | 22.17 s |
+| 30 | − | 148 : 52 | 0.740 | 0.126 s | 23.82 s |
+| 77 | **+** | 53 : 147 | 0.735 | 0.119 s | 22.42 s |
+| 168 | − | 149 : 51 | 0.745 | 0.117 s | 22.24 s |
+
+| | 本机 | 论文 | 倍数 |
+|---|---|---|---|
+| 耗时 | 22.69 s/神经元 | 16.3 ± 0.4 s | **1.39×** |
+
+**观察**：得票率只有 0.615～0.745，明显低于实验 4 的 0.915～1.000。原因是层 1 距离输出最远，
+"抖动"引起的输出变化要穿过 2 个后续隐层才传导到输出端，**信噪比被削弱**；但 200 次投票的多数票
+依然给出了正确结论——这正体现了投票机制设计的意义。该实现**逐个神经元串行**，代码注释明确标注
+该循环 **parallelizable**，但作者未实现。
+
+---
+
+### 实验 4 · 100-200×3-10 · Neuron Wiggle（层 2）
+
+| 项 | 值 |
+|---|---|
+| 目标网络 | `unitary_100_200x3_10` |
+| 攻击层 | `layerID 2` |
+| 规模 | 抽样 5 个神经元（4, 26, 30, 77, 168） |
+| 命令 | `./run_deti.sh neuronWiggle --model models/unitary_100_200x3_10.h5 --layerID 2 --runID neuronWiggle_L2 --tgtNeurons 4 26 30 77 168` |
+| 结果目录 | `results/model_unitary_100_200x3_10.h5/layerID_2/nExp_200/runID_neuronWiggle_L2/` |
+
+**结果**：**5/5 全部恢复正确**，平均 **25.29 s/神经元**。
+
+| 神经元 | 真实符号 | 票数 (减:加) | 得票率 | 找临界点 | 定符号 |
+|---|---|---|---|---|---|
+| 4 | − | 193 : 7 | 0.965 | 0.517 s | 26.62 s |
+| 26 | − | 183 : 17 | 0.915 | 0.407 s | 24.92 s |
+| 30 | **+** | 12 : 188 | 0.940 | 0.357 s | 23.56 s |
+| 77 | − | **200 : 0** | **1.000** | 0.411 s | 23.58 s |
+| 168 | − | 184 : 16 | 0.920 | 0.390 s | 25.30 s |
+
+| | 本机 | 论文 | 倍数 |
+|---|---|---|---|
+| 耗时 | 25.29 s/神经元 | 18.8 ± 0.5 s | **1.35×** |
+
+**观察**：与实验 3 是同一个网络、同样的 5 个神经元，只换了层。**得票率从 0.615～0.745 跃升到
+0.915～1.000**，神经元 77 甚至拿到 200:0 的全票。这直接印证了"距离输出越远、信号衰减越大"的解释：
+层 2 后面只剩 1 个隐层，抖动信号几乎无损地传到输出端。耗时略增（找临界点的开销从 0.12 s 升到
+0.4 s），因为层 2 的临界点更难找。
+
+---
+
+### 实验 5 · 100-200×3-10 · Last Hidden Layer（层 3）
+
+| 项 | 值 |
+|---|---|
+| 目标网络 | `unitary_100_200x3_10` |
+| 攻击层 | `layerID 3`（最后一个隐层） |
+| 规模 | 200 个神经元（**整层**） |
+| 命令 | `./run_deti.sh lastLayer --model models/unitary_100_200x3_10.h5 --layerID 3 --runID lastLayer` |
+| 结果目录 | `results/model_unitary_100_200x3_10.h5/layerID_3/nExp_200/runID_lastLayer/` |
+
+**结果**：**200/200 全部恢复正确**，总耗时 **43.86 s**（约 0.219 s/神经元）。
+
+| | 本机 | 论文 | 倍数 |
+|---|---|---|---|
+| 耗时 | 43.86 s | 35.8 ± 0.2 s | **1.23×** |
+
+**分析**：这是三种方法在同一网络上的直接对比——实验 3、4 用 Neuron Wiggle 做 5 个神经元就要
+22.7 s/个（折合整层 200 个约 **1.26 小时**），而 Last Hidden Layer 一次拿下整层 200 个只要 **43.86 s**，
+**快约 100 倍**。这正是论文设计"最后一层专用方法"的动机。结果表中 200 个神经元的 `coeff` 值全部
+落在 `1` 或 `0` 附近（如 `1`、`-3.56651e-07`），数值质量极好。
+
+---
+
+### 实验 6 · CIFAR10 (3072-256×8-10) · SOE（层 1）
+
+| 项 | 值 |
+|---|---|
+| 目标网络 | `cifar10_rgb_8x256`（3072 → 256×8 ReLU → 10 sigmoid，约 120 万参数） |
+| 攻击层 | `layerID 1` |
+| 规模 | 256 个神经元（**整层**） |
+| 命令 | `./run_deti.sh soe --model models/cifar10_rgb_8x256.h5 --layerID 1 --runID soe` |
+| 结果目录 | `results/model_cifar10_rgb_8x256.h5/layerID_1/nExp_200/runID_soe/` |
+
+**结果**：**256/256 全部恢复正确**，总耗时 **17.90 s**（约 0.070 s/神经元）。
+
+| | 本机 | 论文 | 倍数 |
+|---|---|---|---|
+| 耗时 | 17.90 s | 16 ± 1 s | **1.12×** |
+
+**观察**：这是全部实验中**最接近论文耗时**的一项（1.12×），也是规模最大的一次整层恢复（256 个
+神经元，模型约 120 万参数）。SOE 的效率几乎不受网络规模影响——它一次性解整个方程组，而不是逐个
+神经元迭代，因此**每神经元耗时（0.070 s）与实验 1 的小模型（0.071 s）几乎相同**，这是"多项式时间"
+特征最直观的体现。
+
+> 注：该模型输出层用的是 **sigmoid**，脚本会在加载后把最后一层激活**强制改回 linear** 再攻击
+> （并打印一条 warning），这是预期行为。
+
+---
+
+### 实验 7 · CIFAR10 (3072-256×8-10) · Neuron Wiggle（层 2）
+
+| 项 | 值 |
+|---|---|
+| 目标网络 | `cifar10_rgb_8x256` |
+| 攻击层 | `layerID 2` |
+| 规模 | 抽样 5 个神经元（4, 26, 30, 77, 168） |
+| 数据集 | **`--dataset CIFAR10`**（用真实测试图作为攻击起始点） |
+| 命令 | `./run_deti.sh neuronWiggle --model models/cifar10_rgb_8x256.h5 --layerID 2 --runID neuronWiggle_CIFAR10 --dataset CIFAR10 --tgtNeurons 4 26 30 77 168` |
+| 结果目录 | `results/model_cifar10_rgb_8x256.h5/layerID_2/nExp_200/runID_neuronWiggle_CIFAR10/` |
+
+**结果**：**5/5 全部恢复正确**，平均 **335.03 s/神经元**（约 5.6 分钟/个）。
+
+| 神经元 | 真实符号 | 票数 (减:加) | 得票率 | 找临界点 | 定符号 | 单神经元总耗时 |
+|---|---|---|---|---|---|---|
+| 4 | **+** | 23 : 177 | 0.885 | 252.9 s | 70.3 s | 324.3 s |
+| 26 | **+** | 35 : 165 | 0.825 | 263.6 s | 73.5 s | 339.6 s |
+| 30 | **+** | 34 : 166 | 0.830 | 259.5 s | 76.3 s | 337.1 s |
+| 77 | − | 182 : 18 | 0.910 | 262.9 s | 76.7 s | 341.3 s |
+| 168 | **+** | 38 : 162 | 0.810 | 257.5 s | 74.4 s | 332.9 s |
+
+| | 本机 | 论文 | 倍数 |
+|---|---|---|---|
+| 耗时 | 335.03 s/神经元 | 182 ± 2 s | **1.84×** |
+
+**观察**：**这是全部实验中偏差最大的一项（1.84×），也是最有信息量的一条**。两个原因：
+
+1. 输入维度从 100 涨到 3072，每次 `model.predict` 的前向开销大增；
+2. 它是"逐个神经元串行"且网络最大的一项。
+
+结合实验 6（同样网络、同样规模，SOE 只有 1.12× 偏差）可以看出：**偏差不是来自网络大小本身，而是
+来自 Neuron Wiggle 的逐神经元串行**。按这项的速度，恢复整层 256 个神经元需要
+335 s × 256 ≈ **23.8 小时**——而这恰好就是论文作者明确标注"可并行"却未实现的点（见
+[5.2](#52-并行化的价值量化)）。
+
+---
+
+### 实验 8 · CIFAR10 (3072-256×8-10) · Last Hidden Layer（层 8）
+
+| 项 | 值 |
+|---|---|
+| 目标网络 | `cifar10_rgb_8x256` |
+| 攻击层 | `layerID 8`（最后一个隐层） |
+| 规模 | 256 个神经元（**整层**） |
+| 命令 | `./run_deti.sh lastLayer --model models/cifar10_rgb_8x256.h5 --layerID 8 --runID lastLayer` |
+| 结果目录 | `results/model_cifar10_rgb_8x256.h5/layerID_8/nExp_200/runID_lastLayer/` |
+
+**结果**：**256/256 全部恢复正确**，总耗时 **155.88 s**（约 0.609 s/神经元）。
+
+| | 本机 | 论文 | 倍数 |
+|---|---|---|---|
+| 耗时 | 155.88 s | 189 ± 40 s | **0.82×** |
+
+**观察（重要，别误读）**：本项**比论文更快**（155.88 s vs 189 ± 40 s）。但**不构成"超越"**——
+论文自身的误差棒是 ±40 s，我们的结果完全落在其置信区间内，属于正常波动。将本项与实验 7 对比更有
+意义：在同一网络的相邻层上，Last Hidden Layer（整层 256 个，156 s）比 Neuron Wiggle
+（5 个神经元就要 1675 s）快了两个数量级。
+
+---
+
+### 实验 9 · CIFAR10 模型精度评估
+
+| 项 | 值 |
+|---|---|
+| 目标 | 验证模型权重未在格式转换过程中损坏 |
+| 规模 | CIFAR10 全部 10000 张测试图 |
+| 结果 | **准确率 0.5249**，loss 1.3801 |
+
+| | 本机 | README 期望值 |
+|---|---|---|
+| 准确率 | **0.5249** | 0.5249 |
+| loss | **1.3801** | 1.3801 |
+
+**观察**：与 README 给出的期望值**一字不差**。这是一项**对照实验**：由于本次复现对模型文件做了
+格式适配（`.keras` → `.h5` 副本，见[第 2 节](#复现踩到的三个坑)），必须证明权重没有在转换过程中
+被破坏。精度完全一致即证明——模型文件完好，前述所有攻击实验都是在一个功能正确的网络上进行的。
+
+---
+
+## 四、结果汇总
+
+**论文 README 中列出的 8 个实验全部完成，另有 1 项模型评估**：
+
+| # | 目标网络 | 攻击方法 | 层 | 规模 | 恢复正确 | 本机耗时 | 论文报告 | 倍数 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 784-128-1 | SOE | 1 | 128 | **128/128** | 9.14 s | 6.77 ± 0.04 s | 1.35× |
+| 2 | 784-128-1 | Last Hidden Layer | 1 | 128 | **128/128** | 26.07 s | 18.61 ± 0.05 s | 1.40× |
+| 3 | 100-200×3-10 | Neuron Wiggle | 1 | 5 | **5/5** | 22.69 s/个 | 16.3 ± 0.4 s | 1.39× |
+| 4 | 100-200×3-10 | Neuron Wiggle | 2 | 5 | **5/5** | 25.29 s/个 | 18.8 ± 0.5 s | 1.35× |
+| 5 | 100-200×3-10 | Last Hidden Layer | 3 | 200 | **200/200** | 43.86 s | 35.8 ± 0.2 s | 1.23× |
+| 6 | CIFAR10 3072-256×8-10 | SOE | 1 | 256 | **256/256** | 17.90 s | 16 ± 1 s | 1.12× |
+| 7 | CIFAR10 3072-256×8-10 | Neuron Wiggle（+CIFAR10 数据） | 2 | 5 | **5/5** | 335.03 s/个 | 182 ± 2 s | **1.84×** |
+| 8 | CIFAR10 3072-256×8-10 | Last Hidden Layer | 8 | 256 | **256/256** | 155.88 s | 189 ± 40 s | **0.82×** |
+| ★ | CIFAR10 模型评估 | — | — | 10000 图 | **准确率 0.5249** | — | 0.5249 | 完全一致 |
+
+**五条结论**：
+
+1. **恢复正确率 100%**。8 个实验合计 **983 个神经元的符号全部恢复正确**，无一失败。论文"多项式
+   时间精确恢复符号"的核心结论在我们手上完全成立。
+2. **耗时稳定在论文的 1.1～1.4 倍**。差异来源明确：论文在 GPU / 多核服务器上跑，我们在 2019 款
+   6 核 CPU 上跑，且全程单线程。这一量级的偏差完全合理。
+3. **第 8 项比论文更快**（155.88 s vs 189 ± 40 s）。注意论文自身误差棒是 ±40 s，我们的结果落在其
+   置信区间内，属正常波动，不构成"超越"。
+4. **第 7 项偏慢到 1.84×，反而是最有信息量的一条**。它说明 **Neuron Wiggle 的逐神经元串行才是真正
+   的性能瓶颈**，而这恰好是作者明确标注"可并行"却未实现的点。
+5. **模型文件完好**：CIFAR10 准确率与 loss 与 README 期望值一字不差，说明权重没有在格式转换中损坏。
+
+---
+
+## 五、分析与讨论
+
+### 5.1 三种方法的分工
+
+| 方法 | 粒度 | 适用位置 | 优势 | 代价 |
+|---|---|---|---|---|
+| SOE | **整层一次** | 任意层（需网络足够收缩） | 最快、最稳 | 病态网络会失败 |
+| Neuron Wiggle | **逐个神经元** | 任意层 | 通用、鲁棒 | 慢，且**可并行** |
+| Last Hidden Layer | **整层一次** | 仅最后一隐层 | 一次拿下整层 | 依赖二阶差分精度，对 `eps` 敏感 |
+
+论文的完整性来自这三者的**互补**：SOE 快但会失败，Neuron Wiggle 兜底但慢，Last Hidden Layer 专治
+最后一层。本次复现在同一个网络（实验 3/4 vs 5）和同一网络的不同方法（实验 6/7/8）上都观察到了
+这一分工——尤其是实验 5 中 Last Hidden Layer 比 Neuron Wiggle 快约 **100 倍**。
+
+### 5.2 并行化的价值量化
+
+以实验 7 为例：单个神经元 335 s × 256 个神经元 ≈ **23.8 小时**。而论文在 256 核机器上把整个流程
+压到 **30 分钟**量级。这说明**本文方法实际价值高度依赖硬件并行**，也是论文把"多项式时间"作为核心
+卖点的现实意义——多项式时间内再并行，才是工程上可用的攻击。
+
+这也指出了最直接的改进方向：Neuron Wiggle 的循环中每个神经元互不依赖（代码注释已明确标注
+`parallelizable`），是最容易并行化的一处。
+
+### 5.3 局限性与诚实评估
+
+- 论文恢复的是**功能等价**的模型，**不是**逐位相同的原始参数（网络存在置换、缩放、合并等对称性）；
+- 存在**失败情形**：某些神经元在整个输入分布上从不改变符号、或线性方程组奇异；
+- 攻击要求**高精度实数输出**（论文假设无限精度，实测用 64 位浮点可行）。若目标模型用低精度部署
+  （如 float16），攻击会失效——**这是防御方的启示**。
+
+---
+
+## 六、结论
+
+1. **功能上**：完整复现了论文的三种符号恢复技术，8 个实验 983 个神经元**全部恢复正确**；
+2. **性能上**：耗时与论文报告处于同一量级（1.1～1.4×），差异可由硬件（纯 CPU vs 多核/GPU）解释；
+3. **工程上**：论文代码依赖 Keras 2 与特定的模型序列化格式，在现代 TensorFlow 环境下需要环境隔离
+   与格式适配——**未修改论文源码一行**即完成复现；
+4. **认识上**：论文的核心价值在于把模型提取攻击从"指数时间"推进到"多项式时间"，而**逐神经元方法的
+   并行化**是当前实现的性能瓶颈，也是最直接的改进方向。
+
+---
+
+## 附录：目录与结果文件说明
+
+### 目录结构
+
 ```
-python -m deti.neuronWiggle --model deti/models/cifar10_rgb_8x256.keras --layerID 2 --runID 'neuronWiggle'
+results/model_{模型名}/layerID_{层号}/nExp_{实验预算}/runID_{方法标签}/
 ```
 
-### Last Hidden Layer
-```
-python -m deti.lastLayer --model deti/models/cifar10_rgb_8x256.keras --layerID 8 --runID 'lastLayer'
-```
+`nExp` 是每次实验的迭代预算（默认 200，见 [common.py:63](common.py#L63)）。`layerID`
+**从 1 开始、跳过 InputLayer**（见 [whitebox.py:20](whitebox.py#L20)），所以 `unitary_100_200x3_10`
+的 `layerID 3`、`cifar10_rgb_8x256` 的 `layerID 8` 都是各自的最后一个隐层。
+
+`runID` 标签含义：`soe` / `lastLayer` / `neuronWiggle`（`_L2`、`_CIFAR10` 是层号与数据集标记）。
+
+### 每个实验目录下的三种文件
+
+| 文件 | 内容 | 读取方式 |
+|---|---|---|
+| `df.md` | 结果表的 Markdown 渲染，给人看的 | 直接打开 |
+| `df.pkl` | 同一个 DataFrame 的 pickle，给程序看的 | `pd.read_pickle(...)` |
+| `neuronID_<n>_samples.npz` | 该神经元恢复符号所用的采样点，键为 `samplesL` / `samplesR` | `np.load(...)["samplesL"]` |
+
+`.npz` **只有 Neuron Wiggle 会产出**，因为它需要记录扰动采样点。
+
+### 三种方法的表格列不同，别混用
+
+- **lastLayer**：每行是整层的每个神经元，列为 `realSign` / `recoveredSign` / `isCorrect` / `coeff` /
+  `coeffTimeSeconds` / `signsTimeSeconds` / `recoveryTimeSeconds`；
+- **soe**：同样每行一个神经元，列为 `realSign` / `recoveredSign` / `isCorrect` / `recoveryTimeSeconds`；
+- **neuronWiggle**：只跑 `--tgtNeurons` 指定的少数神经元，所以只有 5 行，列为 `metric4Minus` /
+  `metric4Plus` / `percentage` / `isRecoveredCorrectly` / `tFindCrit` / `tSignRec` /
+  `recoveryTimeSeconds`。
+
+`realSign` 一列三种方法都有，是白盒真值（[whitebox.py](whitebox.py)），用来对照黑盒恢复是否正确。
+
+### 模型说明
+
+`models/` 下三个模型，命名规则 `{输入维度}_{隐层宽度}x{层数}_{输出数}`：
+
+| 模型 | 结构 |
+|---|---|
+| `unitary_784_128_1` | 784 → 128 ReLU → 1 linear |
+| `unitary_100_200x3_10` | 100 → 200×3 ReLU → 10 linear |
+| `cifar10_rgb_8x256` | 3072(32×32×3) → 256×8 ReLU → 10 sigmoid |
+
+- **`.h5` 和 `.keras` 是同一份内容的重复副本**（md5 相同），不是不同模型：`.keras` 是原仓库命名，
+  `.h5` 则让 `results/` 下的目录名（`model_xxx.h5/`）与现成结果对得上。
+- `unitary` 指**每个神经元的权重向量是单位范数随机向量**，`balanced` 指 bias 取采样中位数使神经元
+  约 50% 概率激活（见 [unitarydnn.py](unitarydnn.py)）。**不是**指权重矩阵酉/正交——整矩阵奇异值
+  并不为 1。
+- 所有模型权重 dtype 均为 `float64`，满足攻击对精度的要求。
